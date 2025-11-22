@@ -1,0 +1,8 @@
+{
+  "backup_sources": [
+    "./testni_folder01",
+    "./testni_folder02"
+  ],
+  "bucket": "suispbucket",
+  "prefix": "Laptop"
+}
