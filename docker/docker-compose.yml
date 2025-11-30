@@ -34,7 +34,7 @@ services:
       - ./policy.json:/tmp/policy.json:ro
 
   db:
-    image: postgres:14
+    image: postgres:12
     restart: always
     container_name: pg_db
     environment:

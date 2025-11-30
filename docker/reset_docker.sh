@@ -1,20 +1,23 @@
 #!/bin/bash
 
 echo "Stopping all containers..."
-docker compose down -v
+sudo docker compose down -v
 
 echo "Removing PostgreSQL volume..."
-docker volume rm $(docker volume ls -q | grep pgdata) || true
+sudo docker volume rm $(sudo docker volume ls -q | grep pgdata) || true
 
 echo "Pruning unused volumes..."
-docker volume prune -f
+sudo docker volume prune -f
+
+echo "Removing containers..."
+sudo docker rm -f $(sudo docker ps -a -q) || true
 
 echo "Removing dangling images..."
-docker image prune -f
+sudo docker image prune -f
 
 echo "Rebuilding containers..."
-docker compose up --build -d
+sudo docker compose up --build -d
 
 sleep 5
 
-docker ps
+sudo docker ps

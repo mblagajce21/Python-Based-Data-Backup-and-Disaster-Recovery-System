@@ -5,6 +5,9 @@ from pathlib import Path
 from io import BytesIO
 from datetime import datetime
 from minio import Minio
+import subprocess
+import shutil
+
 
 client = Minio(
     "localhost:9000",
@@ -12,6 +15,7 @@ client = Minio(
     secret_key="suispappsecret",
     secure=False
 )
+
 
 def load_config(path="config.json"):
     with open(path, "r") as f:
@@ -47,6 +51,26 @@ def upload_folder(folder: Path, bucket: str, dest_prefix: str):
             result.append(info)
     return result
 
+def backup_database(db_config, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    command = [
+        "pg_dump",
+        "-C",
+        "-U", db_config["user"], 
+        "-h", db_config["host"], 
+        "-p", db_config["port"], 
+        "-d", db_config["dbname"], 
+        "-f", path,
+        "-Fc"
+    ]
+    # Run the command
+    try:
+        subprocess.run(command, check=True, env={"PGPASSWORD": db_config["password"]})
+        print(f"Dump file {path} has been successfully created.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error occurred while creating the dump: {e}")
+    return path
+
 def run_backup():
     config = load_config()
     sources = config["backup_sources"]
@@ -78,6 +102,15 @@ def run_backup():
             object_name = f"{dest_prefix}/{file_path.name}"
             info = upload_file(file_path, bucket, object_name)
             metadata["entries"].append(info)
+        if src["type"] == "database":
+            db_config = config["db"]
+            backup_path = backup_database(db_config, config["db"]["db_temp_path"])
+            if backup_path:
+                backup_path = Path(backup_path)
+                object_name = f"{dest_prefix}/{backup_path.name}"
+                info = upload_file(backup_path, bucket, object_name)
+                metadata["entries"].append(info)
+                os.remove(config["db"]["db_temp_path"])
 
 
     metadata_bytes = json.dumps(metadata, indent=2).encode("utf-8")

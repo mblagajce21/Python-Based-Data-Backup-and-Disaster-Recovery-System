@@ -15,8 +15,19 @@
     {
       "type": "file",
       "path": "./testni_folder03/test1.txt"
+    },
+    {
+      "type": "database"
     }
   ],
+  "db": {
+    "db_temp_path": "/tmp/pgsql/db_backup.dump",
+    "dbname": "mockdb",
+    "user": "admin",
+    "password": "admin67",
+    "host": "localhost",
+    "port": "5432"
+  },
   "bucket": "suispbucket",
   "prefix": "Laptop"
 }
