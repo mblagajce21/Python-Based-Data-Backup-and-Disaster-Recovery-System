@@ -63,12 +63,21 @@ def run_backup():
     }
 
     for src in sources:
-        folder = Path(src)
-        if not folder.exists():
-            print(f"Preskacem, ne postoji: {folder}")
-            continue
-        entries = upload_folder(folder, bucket, f"{dest_prefix}/{folder.name}")
-        metadata["entries"].extend(entries)
+        if src["type"] == "folder":
+            folder = Path(src["path"])
+            if not folder.exists():
+                print(f"Preskacem, ne postoji: {folder}")
+                continue
+            entries = upload_folder(folder, bucket, f"{dest_prefix}/{folder.name}")
+            metadata["entries"].extend(entries)
+        if src["type"] == "file":
+            file_path = Path(src["path"])
+            if not file_path.exists():
+                print(f"Preskacem, ne postoji: {file_path}")
+                continue
+            object_name = f"{dest_prefix}/{file_path.name}"
+            info = upload_file(file_path, bucket, object_name)
+            metadata["entries"].append(info)
 
 
     metadata_bytes = json.dumps(metadata, indent=2).encode("utf-8")

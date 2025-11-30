@@ -1,7 +1,21 @@
 {
   "backup_sources": [
-    "./testni_folder01",
-    "./testni_folder02"
+    {
+      "type": "folder",
+      "path": "./testni_folder01"
+    },
+    {
+      "type": "folder",
+      "path": "./testni_folder02"
+    },
+    {
+      "type": "file",
+      "path": "test_file.txt"
+    },
+    {
+      "type": "file",
+      "path": "./testni_folder03/test1.txt"
+    }
   ],
   "bucket": "suispbucket",
   "prefix": "Laptop"
