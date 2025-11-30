@@ -27,11 +27,27 @@ services:
       mc admin user add localminio suispapp suispappsecret;
       mc admin policy create localminio suispapp-policy /tmp/policy.json;
       mc admin policy attach localminio suispapp-policy --user suispapp;
-
+      
       exit 0;
       "
     volumes:
       - ./policy.json:/tmp/policy.json:ro
 
+  db:
+    image: postgres:14
+    restart: always
+    container_name: pg_db
+    environment:
+      POSTGRES_DB: mockdb
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin67
+      POSTGRES_INITDB_ARGS: "--data-checksums" 
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+
 volumes:
   minio_data:
+  pgdata:
