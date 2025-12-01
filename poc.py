@@ -65,7 +65,9 @@ def backup_database(db_config, path):
     ]
     # Run the command
     try:
-        subprocess.run(command, check=True, env={"PGPASSWORD": db_config["password"]})
+        env = os.environ.copy()
+        env["PGPASSWORD"] = db_config["password"]
+        subprocess.run(command, check=True, env=env)
         print(f"Dump file {path} has been successfully created.")
     except subprocess.CalledProcessError as e:
         print(f"Error occurred while creating the dump: {e}")
