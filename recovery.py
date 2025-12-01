@@ -7,6 +7,7 @@ from datetime import datetime
 from minio import Minio
 import shutil
 import subprocess
+import sys
 
 client = Minio(
     "localhost:9000",
@@ -23,26 +24,44 @@ def load_config(path="config.json"):
 
 config = load_config()
         
-def get_date_from_backup_name(backup_name):
-    date_string = backup_name.replace('/', '').replace(config["prefix"], '')
+def get_date_from_backup_name(backup_name, prefix):
+    date_string = backup_name.replace('/', '').replace(prefix, '')
     date_format = "%Y-%m-%d_%H-%M-%S"
     return datetime.strptime(date_string, date_format)
 
-def get_latest_backup(objects):
+def get_available_sources(bucket):
+    sources = set()
+    try:
+        objects = client.list_objects(bucket, recursive=False)
+        for obj in objects:
+            source_name = obj.object_name.rstrip('/')
+            if source_name:
+                sources.add(source_name)
+    except Exception as e:
+        print(f"Error listing sources: {e}")
+    return sorted(list(sources))
+
+def get_latest_backup(objects, prefix):
     latest_backup = None
-    print("Available backups:")
+    print(f"\nAvailable backups for '{prefix}':")
+    backup_list = []
     for obj in objects:
-        print(f"- {obj.object_name}")
-        parsed_date = get_date_from_backup_name(obj.object_name)
-        if latest_backup is None or parsed_date > get_date_from_backup_name(latest_backup.object_name):
-            latest_backup = obj
+        print(f"  - {obj.object_name}")
+        backup_list.append(obj)
+        try:
+            parsed_date = get_date_from_backup_name(obj.object_name, prefix)
+            if latest_backup is None or parsed_date > get_date_from_backup_name(latest_backup.object_name, prefix):
+                latest_backup = obj
+        except Exception as e:
+            print(f"  Warning: Could not parse date from {obj.object_name}: {e}")
+            continue
     return latest_backup
 
-def get_metadata_file(latest_backup,client):
+def get_metadata_file(latest_backup, client, bucket):
     metadata = None
-    for obj in client.list_objects(config["bucket"], prefix=latest_backup.object_name, recursive=True):
+    for obj in client.list_objects(bucket, prefix=latest_backup.object_name, recursive=True):
         if (obj.object_name.endswith("metadata.json")):
-            metadata_data = client.get_object(config["bucket"], obj.object_name)
+            metadata_data = client.get_object(bucket, obj.object_name)
             metadata = json.loads(metadata_data.read().decode('utf-8'))
             break
     return metadata
@@ -54,80 +73,157 @@ def check_hash(file_path, expected_hash, chunk_size=65536):
             sha.update(chunk)
     return sha.hexdigest() == expected_hash
 
-def recover_db(client, entry):
-    client.fget_object(config["bucket"], entry['object_name'], config["db"]["db_temp_path"])
-    print("Downloaded database dump to temporary path.")
-    if not check_hash(Path(config["db"]["db_temp_path"]), entry['sha256']):
-        print(f"Hash doesn't match for {entry['object_name']}, database dump may be corrupted.")
+def recover_db(client, entry, bucket):
+    db_name = entry.get('db_name', 'unknown')
+
+    db_config = None
+    for source in config.get("backup_sources", []):
+        if source.get("type") == "database" and source.get("db_config", {}).get("dbname") == db_name:
+            db_config = source["db_config"]
+            break
+    
+    if not db_config:
+        print(f"Error: No database configuration found for '{db_name}'")
         return False
-    db_config = config["db"]
-    print("Restoring database from dump...")
+    
+    # Download the database dump
+    db_temp_path = db_config["db_temp_path"]
+    os.makedirs(os.path.dirname(db_temp_path), exist_ok=True)
+    client.fget_object(bucket, entry['object_name'], db_temp_path)
+    print(f"  Downloaded database dump to temporary path.")
+    
+    # Verify the hash
+    if not check_hash(Path(db_temp_path), entry['sha256']):
+        print(f"  Hash doesn't match for {entry['object_name']}, database dump may be corrupted.")
+        return False
+    
+    print(f"  Restoring database '{db_name}' from dump...")
+    
     command = [
         "pg_restore",
         "-U", db_config["user"],
         "-h", db_config["host"],
         "-p", db_config["port"],
         "-Fc",
+        "--clean",
+        "--if-exists",
         "-d", db_config["dbname"],
-        db_config["db_temp_path"]
+        db_temp_path
     ]
+    
     try:
-        subprocess.run(command, check=True, env={"PGPASSWORD": db_config["password"]})
-        print("Database has been successfully restored.")
+        env = os.environ.copy()
+        env["PGPASSWORD"] = db_config["password"]
+        result = subprocess.run(command, check=True, env=env, capture_output=True, text=True)
+        print(f"  Database '{db_name}' has been successfully restored.")
+        if os.path.exists(db_temp_path):
+            os.remove(db_temp_path)
         return True
     except subprocess.CalledProcessError as e:
-        print(f"Error occurred while restoring the database: {e}")
+        print(f"  Error occurred while restoring the database: {e}")
+        print(f"  STDOUT: {e.stdout}")
+        print(f"  STDERR: {e.stderr}")
+        return False
+    except FileNotFoundError:
+        print("  Error: pg_restore command not found. Please install PostgreSQL client tools.")
+        print("  On macOS, you can install it with: brew install postgresql")
         return False
 
-def recover_file(client, entry):
+def recover_file(client, entry, bucket):
     temp_path = Path(f"{temp_path_prefix}/{entry['local_path']}")
     temp_path.parent.mkdir(parents=True, exist_ok=True)
-    client.fget_object(config["bucket"], entry['object_name'], str(temp_path))
+    client.fget_object(bucket, entry['object_name'], str(temp_path))
     if not check_hash(temp_path, entry['sha256']):
-        print(f"Hash doesn't match for {entry['object_name']}, file may be corrupted.")
+        print(f"  Hash doesn't match for {entry['object_name']}, file may be corrupted.")
         return False
     local_path = Path(entry['local_path'])
     local_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(temp_path, local_path)
     return True
 
-def retrieve_files(metadata, client):
+def retrieve_files(metadata, client, bucket):
     retrieved = 0
     entries = metadata.get("entries", [])
     total = len(entries)
+    source_type = metadata.get("source_type", "unknown")
+    
     for entry in entries:
-        print(f"Retrieving: {entry['object_name']}")
-        if entry["local_path"] == config["db"]["db_temp_path"]:
-            if recover_db(client, entry):
+        print(f"  Retrieving: {entry['object_name']}")
+        if source_type == "database" or entry['object_name'].endswith('db_backup.dump'):
+            if recover_db(client, entry, bucket):
                 retrieved += 1
         else:
-            if recover_file(client, entry):
+            if recover_file(client, entry, bucket):
                 retrieved += 1
-    shutil.rmtree(temp_path_prefix)
+    
+    if os.path.exists(temp_path_prefix):
+        shutil.rmtree(temp_path_prefix)
     return (retrieved, total)
 
 
-def run_recovery():
+def run_recovery(source_filter=None):
     config = load_config()
     bucket = config["bucket"]
-    prefix = config["prefix"]
 
-    objects = client.list_objects(bucket, prefix=prefix + "/", recursive=False)
-
-    latest_backup = get_latest_backup(objects)
-    if latest_backup is None:
-        print("No backups found.")
+    available_sources = get_available_sources(bucket)
+    
+    if not available_sources:
+        print("No backup sources found in the bucket.")
         return
 
-    print(f"Latest backup: {latest_backup.object_name}")
+    print("\n=== Available Backup Sources ===")
+    for i, source in enumerate(available_sources, 1):
+        print(f"{i}. {source}")
+    
+    if source_filter:
+        if source_filter not in available_sources:
+            print(f"\nError: Source '{source_filter}' not found.")
+            print(f"Available sources: {', '.join(available_sources)}")
+            return
+        selected_sources = [source_filter]
+    else:
+        print("\nOptions:")
+        print("  - Enter source name (e.g., 'Laptop' or 'DB_mockdb')")
+        print("  - Enter 'all' to recover all sources")
+        print("  - Press Enter to recover all sources")
+        
+        choice = input("\nYour choice: ").strip()
+        
+        if choice.lower() == 'all' or choice == '':
+            selected_sources = available_sources
+        elif choice in available_sources:
+            selected_sources = [choice]
+        else:
+            print(f"Invalid choice. Available sources: {', '.join(available_sources)}")
+            return
 
-    metadata = get_metadata_file(latest_backup, client)
-    if metadata is None:
-        print("No metadata found in the latest backup.")
-        return
-            
-    (retrieved, total) = retrieve_files(metadata, client)
+    for source_name in selected_sources:
+        print(f"\n{'='*60}")
+        print(f"=== Recovering source: {source_name} ===")
+        print(f"{'='*60}")
+        
+        objects = client.list_objects(bucket, prefix=source_name + "/", recursive=False)
 
-    print(f"Recovery completed. Retrieved {retrieved}/{total} files.")
+        latest_backup = get_latest_backup(objects, source_name)
+        if latest_backup is None:
+            print(f"No backups found for source '{source_name}'.")
+            continue
+
+        print(f"\nLatest backup: {latest_backup.object_name}")
+
+        metadata = get_metadata_file(latest_backup, client, bucket)
+        if metadata is None:
+            print("No metadata found in the latest backup.")
+            continue
+        
+        print(f"Source type: {metadata.get('source_type', 'unknown')}")
+        print(f"Timestamp: {metadata.get('timestamp', 'unknown')}")
+        print(f"Total files: {len(metadata.get('entries', []))}")
+                
+        (retrieved, total) = retrieve_files(metadata, client, bucket)
+
+        print(f"\n=== Recovery completed for '{source_name}': Retrieved {retrieved}/{total} files ===")
+
 if __name__ == "__main__":
-    run_recovery()
+    source_filter = sys.argv[1] if len(sys.argv) > 1 else None
+    run_recovery(source_filter)

@@ -1,33 +1,59 @@
 {
   "backup_sources": [
     {
-      "type": "folder",
-      "path": "./testni_folder01"
+      "name": "Laptop",
+      "type": "device",
+      "items": [
+        {
+          "type": "folder",
+          "path": "./testni_folder01"
+        },
+        {
+          "type": "folder",
+          "path": "./testni_folder02"
+        },
+        {
+          "type": "file",
+          "path": "test_file.txt"
+        },
+        {
+          "type": "file",
+          "path": "./testni_folder03/test1.txt"
+        }
+      ]
     },
     {
-      "type": "folder",
-      "path": "./testni_folder02"
-    },
-    {
-      "type": "file",
-      "path": "test_file.txt"
-    },
-    {
-      "type": "file",
-      "path": "./testni_folder03/test1.txt"
-    },
-    {
-      "type": "database"
+      "name": "DB_mockdb",
+      "type": "database",
+      "db_config": {
+        "db_temp_path": "/tmp/pgsql/db_backup.dump",
+        "dbname": "mockdb",
+        "user": "admin",
+        "password": "admin67",
+        "host": "localhost",
+        "port": "5432"
+      }
     }
   ],
-  "db": {
-    "db_temp_path": "/tmp/pgsql/db_backup.dump",
-    "dbname": "mockdb",
-    "user": "admin",
-    "password": "admin67",
-    "host": "localhost",
-    "port": "5432"
-  },
   "bucket": "suispbucket",
-  "prefix": "Laptop"
+  "schedule": {
+    "enabled": true,
+    "day_of_week": "monday,friday",
+    "hour": 17,
+    "minute": 17
+  },
+  "email": {
+    "enabled": true,
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 587,
+    "use_tls": true,
+    "sender_email": "user@student.foi.hr",
+    "sender_password": "strongpassword",
+    "recipient_emails": [
+      "user21@student.foi.hr"
+    ],
+    "send_on_success": true,
+    "send_on_failure": true,
+    "include_details": true
+  }
 }
