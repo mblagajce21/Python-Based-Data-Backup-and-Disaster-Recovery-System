@@ -7,7 +7,7 @@ import schedule
 import time
 import json
 from datetime import datetime
-from poc import run_backup, load_config
+from backup import run_backup, load_config
 from email_notifier import send_email
 
 
