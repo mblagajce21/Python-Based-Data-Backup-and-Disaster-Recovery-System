@@ -36,6 +36,11 @@
     }
   ],
   "bucket": "suispbucket",
+  "encryption": {
+    "enabled": true,
+    "key_file": "./encryption.key",
+    "encrypt_metadata": false
+  },
   "schedule": {
     "enabled": true,
     "day_of_week": "monday,friday",

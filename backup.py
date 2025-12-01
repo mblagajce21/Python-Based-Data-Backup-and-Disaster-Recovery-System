@@ -9,6 +9,7 @@ import subprocess
 import shutil
 import time
 from email_notifier import send_email
+from encryption import EncryptionManager
 
 
 client = Minio(
@@ -17,6 +18,8 @@ client = Minio(
     secret_key="suispappsecret",
     secure=False
 )
+
+encryption_manager = None
 
 
 def load_config(path="config.json"):
@@ -61,20 +64,39 @@ def get_previous_backup_metadata(bucket: str, source_name: str):
         print(f"No previous backup found for {source_name}: {e}")
         return None
 
-def upload_file(path: Path, bucket: str, object_name: str):
+def upload_file(path: Path, bucket: str, object_name: str, encrypt=False):
+    global encryption_manager
+    
     file_hash = sha256_file(path)
     file_size = path.stat().st_size
+    
     with path.open("rb") as f:
-        client.put_object(bucket, object_name, data=f, length=file_size)
-    print(f"Uploaded: {path} -> {object_name}")
+        file_data = f.read()
+    
+    if encrypt and encryption_manager:
+        encrypted_data = encryption_manager.encrypt_data(file_data)
+        data_stream = BytesIO(encrypted_data)
+        upload_size = len(encrypted_data)
+        object_name = object_name + ".enc"
+        print(f"Uploaded (encrypted): {path} -> {object_name}")
+    else:
+        data_stream = BytesIO(file_data)
+        upload_size = file_size
+        print(f"Uploaded: {path} -> {object_name}")
+    
+    client.put_object(bucket, object_name, data=data_stream, length=upload_size)
+    
     return {
         "local_path": str(path),
         "object_name": object_name,
         "sha256": file_hash,
-        "size": file_size
+        "size": file_size,
+        "encrypted": encrypt
     }
 
-def upload_file_incremental(path: Path, bucket: str, object_name: str, previous_metadata: dict):
+def upload_file_incremental(path: Path, bucket: str, object_name: str, previous_metadata: dict, encrypt=False):
+    global encryption_manager
+    
     file_hash = sha256_file(path)
     file_size = path.stat().st_size
     
@@ -88,39 +110,54 @@ def upload_file_incremental(path: Path, bucket: str, object_name: str, previous_
                     "sha256": file_hash,
                     "size": file_size,
                     "skipped": True,
+                    "encrypted": entry.get("encrypted", False),
                     "reason": "unchanged"
                 }
     
     with path.open("rb") as f:
-        client.put_object(bucket, object_name, data=f, length=file_size)
-    print(f"Uploaded (new/changed): {path} -> {object_name}")
+        file_data = f.read()
+    
+    if encrypt and encryption_manager:
+        encrypted_data = encryption_manager.encrypt_data(file_data)
+        data_stream = BytesIO(encrypted_data)
+        upload_size = len(encrypted_data)
+        object_name = object_name + ".enc"
+        print(f"Uploaded (new/changed, encrypted): {path} -> {object_name}")
+    else:
+        data_stream = BytesIO(file_data)
+        upload_size = file_size
+        print(f"Uploaded (new/changed): {path} -> {object_name}")
+    
+    client.put_object(bucket, object_name, data=data_stream, length=upload_size)
+    
     return {
         "local_path": str(path),
         "object_name": object_name,
         "sha256": file_hash,
         "size": file_size,
-        "skipped": False
+        "skipped": False,
+        "encrypted": encrypt
     }
 
-def upload_folder(folder: Path, bucket: str, dest_prefix: str):
+def upload_folder(folder: Path, bucket: str, dest_prefix: str, encrypt=False):
     result = []
     for root, _, files in os.walk(folder):
         for fname in files:
             file_path = Path(root) / fname
             rel = file_path.relative_to(folder).as_posix()
             object_name = f"{dest_prefix}/{rel}"
-            info = upload_file(file_path, bucket, object_name)
+            info = upload_file(file_path, bucket, object_name, encrypt)
             result.append(info)
     return result
 
-def upload_folder_incremental(folder: Path, bucket: str, dest_prefix: str, previous_metadata: dict):
+def upload_folder_incremental(folder: Path, bucket: str, dest_prefix: str, previous_metadata: dict, encrypt=False):
     result = []
     for root, _, files in os.walk(folder):
         for fname in files:
             file_path = Path(root) / fname
             rel = file_path.relative_to(folder).as_posix()
             object_name = f"{dest_prefix}/{rel}"
-            info = upload_file_incremental(file_path, bucket, object_name, previous_metadata)
+            info = upload_file_incremental(file_path, bucket, object_name, previous_metadata, encrypt)
             result.append(info)
     return result
 
@@ -147,16 +184,26 @@ def backup_database(db_config, path):
         return None
 
 def run_backup():
-    """
-    Run backup for all configured sources and return a detailed report
-    Returns: dict with backup report including status, timing, and metrics
-    """
+    global encryption_manager
+    
     start_time = time.time()
     start_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
     config = load_config()
     sources = config["backup_sources"]
     bucket = config["bucket"]
+    
+    encryption_config = config.get("encryption", {})
+    encryption_enabled = encryption_config.get("enabled", False)
+    
+    if encryption_enabled:
+        key_file = encryption_config.get("key_file", "./encryption.key")
+        try:
+            encryption_manager = EncryptionManager(key_file=key_file)
+            print(f"Encryption enabled using key from: {key_file}")
+        except Exception as e:
+            print(f"Warning: Failed to initialize encryption: {e}")
+            encryption_enabled = False
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     
@@ -193,6 +240,7 @@ def run_backup():
             "bucket": bucket,
             "source_name": source_name,
             "source_type": source_type,
+            "encrypted": encryption_enabled,
             "entries": []
         }
 
@@ -209,7 +257,7 @@ def run_backup():
                         if not folder.exists():
                             print(f"Preskacem, ne postoji: {folder}")
                             continue
-                        entries = upload_folder_incremental(folder, bucket, f"{dest_prefix}/{folder.name}", previous_metadata)
+                        entries = upload_folder_incremental(folder, bucket, f"{dest_prefix}/{folder.name}", previous_metadata, encryption_enabled)
                         metadata["entries"].extend(entries)
                     elif item["type"] == "file":
                         file_path = Path(item["path"])
@@ -217,7 +265,7 @@ def run_backup():
                             print(f"Preskacem, ne postoji: {file_path}")
                             continue
                         object_name = f"{dest_prefix}/{file_path.name}"
-                        info = upload_file_incremental(file_path, bucket, object_name, previous_metadata)
+                        info = upload_file_incremental(file_path, bucket, object_name, previous_metadata, encryption_enabled)
                         metadata["entries"].append(info)
 
             elif source_type == "database":
@@ -226,7 +274,7 @@ def run_backup():
                 if backup_path:
                     backup_path = Path(backup_path)
                     object_name = f"{dest_prefix}/{backup_path.name}"
-                    info = upload_file(backup_path, bucket, object_name)
+                    info = upload_file(backup_path, bucket, object_name, encryption_enabled)
                     info["db_name"] = db_config["dbname"]
                     metadata["entries"].append(info)
                     os.remove(db_config["db_temp_path"])

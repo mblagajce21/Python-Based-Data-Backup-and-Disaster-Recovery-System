@@ -8,6 +8,7 @@ from minio import Minio
 import shutil
 import subprocess
 import sys
+from encryption import EncryptionManager
 
 client = Minio(
     "localhost:9000",
@@ -17,12 +18,22 @@ client = Minio(
 )
 
 temp_path_prefix = "/tmp/recovery"
+encryption_manager = None
 
 def load_config(path="config.json"):
     with open(path, "r") as f:
         return json.load(f)
 
 config = load_config()
+
+encryption_config = config.get("encryption", {})
+if encryption_config.get("enabled", False):
+    key_file = encryption_config.get("key_file", "./encryption.key")
+    try:
+        encryption_manager = EncryptionManager(key_file=key_file)
+        print(f"Encryption enabled for recovery using key from: {key_file}")
+    except Exception as e:
+        print(f"Warning: Failed to initialize encryption: {e}")
         
 def get_date_from_backup_name(backup_name, prefix):
     date_string = backup_name.replace('/', '').replace(prefix, '')
@@ -86,13 +97,31 @@ def recover_db(client, entry, bucket):
         print(f"Error: No database configuration found for '{db_name}'")
         return False
     
-    # Download the database dump
     db_temp_path = db_config["db_temp_path"]
     os.makedirs(os.path.dirname(db_temp_path), exist_ok=True)
-    client.fget_object(bucket, entry['object_name'], db_temp_path)
-    print(f"  Downloaded database dump to temporary path.")
     
-    # Verify the hash
+    object_name = entry['object_name']
+    is_encrypted = entry.get('encrypted', False)
+    
+    if is_encrypted:
+        encrypted_temp = db_temp_path + '.enc'
+        client.fget_object(bucket, object_name, encrypted_temp)
+        
+        if encryption_manager:
+            try:
+                encryption_manager.decrypt_file(encrypted_temp, db_temp_path)
+                os.remove(encrypted_temp)
+                print(f"  Downloaded and decrypted database dump.")
+            except Exception as e:
+                print(f"  Error decrypting database dump: {e}")
+                return False
+        else:
+            print(f"  Error: Database dump is encrypted but no encryption key available")
+            return False
+    else:
+        client.fget_object(bucket, object_name, db_temp_path)
+        print(f"  Downloaded database dump to temporary path.")
+    
     if not check_hash(Path(db_temp_path), entry['sha256']):
         print(f"  Hash doesn't match for {entry['object_name']}, database dump may be corrupted.")
         return False
@@ -130,9 +159,32 @@ def recover_db(client, entry, bucket):
         return False
 
 def recover_file(client, entry, bucket):
+    global encryption_manager
+    
     temp_path = Path(f"{temp_path_prefix}/{entry['local_path']}")
     temp_path.parent.mkdir(parents=True, exist_ok=True)
-    client.fget_object(bucket, entry['object_name'], str(temp_path))
+    
+    object_name = entry['object_name']
+    is_encrypted = entry.get('encrypted', False)
+    
+    if is_encrypted:
+        encrypted_temp = temp_path.with_suffix(temp_path.suffix + '.enc')
+        client.fget_object(bucket, object_name, str(encrypted_temp))
+        
+        if encryption_manager:
+            try:
+                encryption_manager.decrypt_file(encrypted_temp, temp_path)
+                encrypted_temp.unlink()
+                print(f"  Decrypted: {object_name}")
+            except Exception as e:
+                print(f"  Error decrypting {object_name}: {e}")
+                return False
+        else:
+            print(f"  Error: File is encrypted but no encryption key available")
+            return False
+    else:
+        client.fget_object(bucket, object_name, str(temp_path))
+    
     if not check_hash(temp_path, entry['sha256']):
         print(f"  Hash doesn't match for {entry['object_name']}, file may be corrupted.")
         return False
