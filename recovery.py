@@ -235,7 +235,7 @@ def run_recovery(source_filter=None):
         selected_sources = [source_filter]
     else:
         print("\nOptions:")
-        print("  - Enter source name (e.g., 'Laptop' or 'DB_mockdb')")
+        print("  - Enter source number (1, 2, ...)")
         print("  - Enter 'all' to recover all sources")
         print("  - Press Enter to recover all sources")
         
@@ -243,10 +243,17 @@ def run_recovery(source_filter=None):
         
         if choice.lower() == 'all' or choice == '':
             selected_sources = available_sources
+        elif choice.isdigit():
+            index = int(choice)
+            if 1 <= index <= len(available_sources):
+                selected_sources = [available_sources[index - 1]]
+            else:
+                print(f"Invalid index. Please enter a number between 1 and {len(available_sources)}.")
+                return
         elif choice in available_sources:
             selected_sources = [choice]
         else:
-            print(f"Invalid choice. Available sources: {', '.join(available_sources)}")
+            print(f"Invalid choice. Please enter a number (1-{len(available_sources)}), 'all', or a source name.")
             return
 
     for source_name in selected_sources:
