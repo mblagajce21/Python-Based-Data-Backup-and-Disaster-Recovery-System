@@ -12,9 +12,9 @@ db_config = {
 try:
     conn = psycopg2.connect(**db_config)
     cursor = conn.cursor()
-    cursor.execute("INSERT INTO users (username, email) VALUES (%s, %s);", ('newuser1', 'newuser1@example.com'))
+    cursor.execute("DELETE FROM users")  
     conn.commit()
-    print("New user inserted successfully.")
+    print("Users deleted successfully.")
 
 except Exception as e:
     print("Error connecting to the database:", e)
